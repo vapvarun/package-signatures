@@ -20,7 +20,8 @@ class Package_Signatures_Guard {
 	 * Hooks in. Called once, by the newest bundled copy.
 	 */
 	public static function boot() {
-		add_filter( 'upgrader_pre_download', array( __CLASS__, 'pre_download' ), 20, 4 );
+		// Last, so a file another handler supplied earlier is checked too, not waved through.
+		add_filter( 'upgrader_pre_download', array( __CLASS__, 'pre_download' ), PHP_INT_MAX, 4 );
 	}
 
 	/**
@@ -51,60 +52,95 @@ class Package_Signatures_Guard {
 	 * @return false|string|WP_Error
 	 */
 	public static function pre_download( $reply, $package, $upgrader = null, $hook_extra = array() ) {
-		if ( false !== $reply || ! is_string( $package ) || ! preg_match( '#^https://#i', $package ) ) {
+		if ( is_wp_error( $reply ) ) {
 			return $reply;
 		}
-		$product = self::match( (array) $hook_extra, $package );
+		$product = self::match( (array) $hook_extra );
 		if ( ! $product ) {
-			return $reply;
+			return $reply; // Not one of ours: untouched.
 		}
 
-		$tmp = wp_tempnam( 'package-signatures' );
-		$res = wp_safe_remote_get( $package, array( 'timeout' => 300, 'stream' => true, 'filename' => $tmp ) );
-		if ( is_wp_error( $res ) || 200 !== (int) wp_remote_retrieve_response_code( $res ) ) {
-			wp_delete_file( $tmp );
-			return new WP_Error( 'download_failed', __( 'The update package could not be downloaded.', 'package-signatures' ) );
+		// From here on, this update is checked whatever the package URL says: the offer itself could be forged.
+		$response = null;
+		$owned    = false;
+		if ( is_string( $reply ) && '' !== $reply ) {
+			$file = $reply; // Another handler already supplied the file; verify it rather than pass it through.
+		} else {
+			$problem = self::package_problem( $package, $product );
+			if ( '' !== $problem ) {
+				$result = array( 'ok' => false, 'reason' => $problem, 'manifest' => array() );
+				self::record( $product, $result );
+				return 'enforce' === $product['mode'] ? self::refusal( $problem ) : $reply;
+			}
+			$file     = wp_tempnam( 'package-signatures' );
+			$owned    = true;
+			$response = wp_safe_remote_get( $package, array( 'timeout' => 300, 'stream' => true, 'filename' => $file ) );
+			if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+				wp_delete_file( $file );
+				return new WP_Error( 'download_failed', __( 'The update package could not be downloaded.', 'package-signatures' ) );
+			}
 		}
 
-		$bundle = self::bundle_from( $res, $product, (array) $hook_extra );
-		$result = Package_Signatures_Verifier::verify( $bundle, (array) $product['keys'], $tmp, self::expect( $product ) );
+		$bundle = self::bundle_from( $response, $product );
+		$result = Package_Signatures_Verifier::verify( $bundle, (array) $product['keys'], $file, self::expect( $product ) );
 		self::record( $product, $result );
 
 		if ( $result['ok'] || 'warn' === $product['mode'] ) {
-			return $tmp; // Hand the downloaded file to the upgrader.
+			return $file; // Hand the file to the upgrader.
 		}
-		wp_delete_file( $tmp );
-		/* translators: %s: reason code */
-		return new WP_Error( 'package_signature_invalid', sprintf( __( 'Update stopped: the package signature could not be verified (%s).', 'package-signatures' ), $result['reason'] ) );
+		if ( $owned ) {
+			wp_delete_file( $file );
+		}
+		return self::refusal( $result['reason'] );
 	}
 
 	/**
-	 * The registered product this update is for, if its package comes from a registered host.
+	 * Why a package URL must not be fetched for this product, or '' when it may.
 	 *
-	 * @param array  $hook_extra Upgrader context.
-	 * @param string $package    Package URL.
-	 * @return array|null
-	 */
-	private static function match( array $hook_extra, $package ) {
-		$products = self::products();
-		$key      = ! empty( $hook_extra['plugin'] ) ? 'plugin:' . $hook_extra['plugin'] : ( ! empty( $hook_extra['theme'] ) ? 'theme:' . $hook_extra['theme'] : '' );
-		if ( '' === $key || empty( $products[ $key ] ) ) {
-			return null;
-		}
-		$host = strtolower( (string) wp_parse_url( $package, PHP_URL_HOST ) );
-		return in_array( $host, $products[ $key ]['hosts'], true ) ? $products[ $key ] : null;
-	}
-
-	/**
-	 * Signature bundle: the X-Package-Signature header, else the product's fallback URL.
-	 *
-	 * @param array|WP_HTTP_Response $res     Download response.
-	 * @param array                  $product Registration.
-	 * @param array                  $hook_extra Upgrader context.
+	 * @param mixed $package Package URL.
+	 * @param array $product Registration.
 	 * @return string
 	 */
-	private static function bundle_from( $res, array $product, array $hook_extra ) {
-		$header = (string) wp_remote_retrieve_header( $res, 'x-package-signature' );
+	private static function package_problem( $package, array $product ) {
+		if ( ! is_string( $package ) || ! preg_match( '#^https://#i', $package ) ) {
+			return 'insecure_url';
+		}
+		$host = strtolower( (string) wp_parse_url( $package, PHP_URL_HOST ) );
+		return in_array( $host, $product['hosts'], true ) ? '' : 'untrusted_host';
+	}
+
+	/**
+	 * The error that stops an update in enforce mode.
+	 *
+	 * @param string $reason Reason code.
+	 * @return WP_Error
+	 */
+	private static function refusal( $reason ) {
+		/* translators: %s: reason code */
+		return new WP_Error( 'package_signature_invalid', sprintf( __( 'Update stopped: the package signature could not be verified (%s).', 'package-signatures' ), $reason ) );
+	}
+
+	/**
+	 * The registered product this update is for, matched on the plugin or theme being updated only.
+	 *
+	 * @param array $hook_extra Upgrader context.
+	 * @return array|null
+	 */
+	private static function match( array $hook_extra ) {
+		$products = self::products();
+		$key      = ! empty( $hook_extra['plugin'] ) ? 'plugin:' . $hook_extra['plugin'] : ( ! empty( $hook_extra['theme'] ) ? 'theme:' . $hook_extra['theme'] : '' );
+		return ( '' !== $key && ! empty( $products[ $key ] ) ) ? $products[ $key ] : null;
+	}
+
+	/**
+	 * Signature bundle: the X-Package-Signature header of our own download, else the product's fallback URL.
+	 *
+	 * @param array|WP_HTTP_Response|null $res     Download response, null when another handler supplied the file.
+	 * @param array                       $product Registration.
+	 * @return string
+	 */
+	private static function bundle_from( $res, array $product ) {
+		$header = $res ? (string) wp_remote_retrieve_header( $res, 'x-package-signature' ) : '';
 		if ( '' !== $header ) {
 			$decoded = base64_decode( $header, true );
 			if ( false !== $decoded ) {
