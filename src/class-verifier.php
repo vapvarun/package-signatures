@@ -81,6 +81,7 @@ class Package_Signatures_Verifier {
 		if ( ! is_readable( $file ) ) {
 			return self::fail( 'file_missing', $m );
 		}
+		clearstatcache( true, $file ); // The file may have been rewritten in this request; never trust a cached size.
 		if ( (int) ( $m['size'] ?? -1 ) !== (int) filesize( $file ) ) {
 			return self::fail( 'wrong_size', $m );
 		}

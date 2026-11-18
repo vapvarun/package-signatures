@@ -4,7 +4,7 @@
  * them. Bundle this folder in each plugin or theme and call package_signatures_register(); when several products
  * bundle it, the newest copy runs and only that copy loads its classes.
  *
- * Version: 1.0.1
+ * Version: 1.0.2
  * License: GPL-2.0-or-later
  *
  * @package PackageSignatures
@@ -13,7 +13,7 @@
 defined( 'ABSPATH' ) || exit;
 
 // Every copy adds itself; the newest is chosen once all plugins and the theme have loaded.
-$GLOBALS['package_signatures_copies']['1.0.1'] = __DIR__;
+$GLOBALS['package_signatures_copies']['1.0.2'] = __DIR__;
 
 if ( ! function_exists( 'package_signatures_register' ) ) {
 	/**
@@ -26,6 +26,8 @@ if ( ! function_exists( 'package_signatures_register' ) ) {
 	 *     @type array  $keys     key_id => base64 Ed25519 public key (current and next, for rotation).
 	 *     @type string $mode     'warn' (default: log and install) or 'enforce' (refuse unsigned or invalid).
 	 *     @type string $fallback URL with {product} and {version}, used when the download carries no signature header.
+	 *     @type array  $messages Optional, translated in the product's own text domain: 'download_failed' and
+	 *                            'signature_invalid' (with %s for the reason code). English is used for any left out.
 	 * }
 	 */
 	function package_signatures_register( array $args ) {

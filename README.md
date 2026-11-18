@@ -24,9 +24,18 @@ package_signatures_register(
 		'keys'     => array( 'store-2026-1' => 'BASE64 PUBLIC KEY' ),
 		'mode'     => 'warn',                               // 'enforce' once every release is signed
 		'fallback' => 'https://store.example.com/package-signatures/{product}/{version}',
+		// Optional: the two messages a site owner can see, in your own text domain.
+		'messages' => array(
+			'download_failed'   => __( 'The update package could not be downloaded.', 'my-plugin' ),
+			/* translators: %s: reason code */
+			'signature_invalid' => __( 'Update stopped: the package signature could not be verified (%s).', 'my-plugin' ),
+		),
 	)
 );
 ```
+
+The library has no text domain of its own (a bundled copy cannot ship translations, and WordPress Plugin Check
+flags a domain that is not the plugin's), so pass `messages` to have them translated; English is used otherwise.
 
 Products that are not registered, and packages from other hosts, are never touched. When several products bundle
 the library, the newest copy runs and only that copy loads its classes.

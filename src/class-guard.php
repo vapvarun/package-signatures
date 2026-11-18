@@ -70,14 +70,14 @@ class Package_Signatures_Guard {
 			if ( '' !== $problem ) {
 				$result = array( 'ok' => false, 'reason' => $problem, 'manifest' => array() );
 				self::record( $product, $result );
-				return 'enforce' === $product['mode'] ? self::refusal( $problem ) : $reply;
+				return 'enforce' === $product['mode'] ? self::refusal( $problem, $product ) : $reply;
 			}
 			$file     = wp_tempnam( 'package-signatures' );
 			$owned    = true;
 			$response = wp_safe_remote_get( $package, array( 'timeout' => 300, 'stream' => true, 'filename' => $file ) );
 			if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
 				wp_delete_file( $file );
-				return new WP_Error( 'download_failed', __( 'The update package could not be downloaded.', 'package-signatures' ) );
+				return new WP_Error( 'download_failed', self::message( $product, 'download_failed', 'The update package could not be downloaded.' ) );
 			}
 		}
 
@@ -91,7 +91,7 @@ class Package_Signatures_Guard {
 		if ( $owned ) {
 			wp_delete_file( $file );
 		}
-		return self::refusal( $result['reason'] );
+		return self::refusal( $result['reason'], $product );
 	}
 
 	/**
@@ -112,12 +112,26 @@ class Package_Signatures_Guard {
 	/**
 	 * The error that stops an update in enforce mode.
 	 *
-	 * @param string $reason Reason code.
+	 * @param string $reason  Reason code.
+	 * @param array  $product Registration.
 	 * @return WP_Error
 	 */
-	private static function refusal( $reason ) {
-		/* translators: %s: reason code */
-		return new WP_Error( 'package_signature_invalid', sprintf( __( 'Update stopped: the package signature could not be verified (%s).', 'package-signatures' ), $reason ) );
+	public static function refusal( $reason, array $product = array() ) {
+		return new WP_Error( 'package_signature_invalid', sprintf( self::message( $product, 'signature_invalid', 'Update stopped: the package signature could not be verified (%s).' ), $reason ) );
+	}
+
+	/**
+	 * A message the product translated in its own text domain (registered under 'messages'), or the English default.
+	 * The library has no text domain of its own: each product ships its own translations.
+	 *
+	 * @param array  $product Registration.
+	 * @param string $key     download_failed | signature_invalid.
+	 * @param string $english Default.
+	 * @return string
+	 */
+	public static function message( array $product, $key, $english ) {
+		$text = $product['messages'][ $key ] ?? '';
+		return is_string( $text ) && '' !== $text ? $text : $english;
 	}
 
 	/**
